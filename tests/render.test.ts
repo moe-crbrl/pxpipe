@@ -67,10 +67,17 @@ describe('transform', () => {
     expect(info.imageCount).toBeGreaterThanOrEqual(1);
 
     const out = JSON.parse(new TextDecoder().decode(body));
-    expect(Array.isArray(out.system)).toBe(true);
-    const imageBlocks = out.system.filter((b: any) => b.type === 'image');
+    // Default placement is 'user' — images go into the first user message,
+    // not the system field (Anthropic rejects image blocks in `system`).
+    const userContent = out.messages[0].content as any[];
+    expect(Array.isArray(userContent)).toBe(true);
+    const imageBlocks = userContent.filter((b: any) => b.type === 'image');
     expect(imageBlocks.length).toBe(info.imageCount);
     expect(imageBlocks[0].source.media_type).toBe('image/png');
+    // And the system field must NOT contain image blocks (would 400).
+    if (Array.isArray(out.system)) {
+      for (const b of out.system) expect(b.type).not.toBe('image');
+    }
   });
 
   it('folds tool docs into the same image and stubs originals', async () => {
@@ -111,7 +118,7 @@ describe('transform', () => {
     expect(textBlocks.some((b: any) => b.text.includes('x-anthropic-billing-header'))).toBe(true);
   });
 
-  it('keeps <env> as text after the image so cache_control stays stable', async () => {
+  it('keeps <env> as text outside the image so cache_control stays stable', async () => {
     const staticSlab = 'claude.md ground truth.\n'.repeat(500);
     const envBlock =
       "<env>\nWorking directory: /tmp/parityproj\nIs directory a git repo: Yes\nPlatform: darwin\nToday's date: 2026-05-18\n</env>";
@@ -130,25 +137,27 @@ describe('transform', () => {
     expect(info.staticChars).toBeGreaterThan(info.dynamicChars);
 
     const out = JSON.parse(new TextDecoder().decode(outBytes));
-    const blocks = out.system as any[];
-    // Find the last image block.
-    let lastImageIdx = -1;
-    for (let i = 0; i < blocks.length; i++) if (blocks[i].type === 'image') lastImageIdx = i;
-    expect(lastImageIdx).toBeGreaterThanOrEqual(0);
+    // With placement='user' (the default), images live in the first user
+    // message and the dynamic <env> block is kept as text in the system
+    // field — so cache_control on the image is unaffected by env drift.
+    const userContent = out.messages[0].content as any[];
+    const sysBlocks = (Array.isArray(out.system) ? out.system : []) as any[];
 
-    // Everything AFTER the last image should be text and should contain the
-    // <env> block verbatim — that's the whole point of the split.
-    const tail = blocks
-      .slice(lastImageIdx + 1)
+    const hasImage = userContent.some((b: any) => b.type === 'image');
+    expect(hasImage).toBe(true);
+
+    // <env> must show up as text somewhere outside the image — the dynamic
+    // tail. With 'user' placement that's the system field.
+    const allText = [...sysBlocks, ...userContent]
       .filter((b: any) => b.type === 'text')
       .map((b: any) => b.text)
       .join('\n');
-    expect(tail).toContain('<env>');
-    expect(tail).toContain('Working directory: /tmp/parityproj');
+    expect(allText).toContain('<env>');
+    expect(allText).toContain('Working directory: /tmp/parityproj');
 
-    // And the static slab must NOT show up in any text block — it lives in
-    // the image now.
-    for (const b of blocks) {
+    // The static slab must NOT appear in any text block — it lives in the
+    // image now.
+    for (const b of [...sysBlocks, ...userContent]) {
       if (b.type === 'text') expect(b.text).not.toContain('claude.md ground truth.');
     }
   });
@@ -169,7 +178,11 @@ describe('transform', () => {
     expect(info.dynamicBlockCount).toBe(2);
 
     const out = JSON.parse(new TextDecoder().decode(outBytes));
-    const cached = (out.system as any[]).filter((b: any) => b.cache_control);
+    // cache_control must land on exactly one image block — anywhere in the
+    // request (system field OR user message), never on a text block.
+    const sysBlocks = (Array.isArray(out.system) ? out.system : []) as any[];
+    const userContent = (out.messages[0].content ?? []) as any[];
+    const cached = [...sysBlocks, ...userContent].filter((b: any) => b.cache_control);
     expect(cached.length).toBe(1);
     expect(cached[0].type).toBe('image');
   });
@@ -279,11 +292,12 @@ describe('transform', () => {
     );
     // Compare image PNG bytes only — the request envelope wraps the same
     // bytes but JSON ordering is deterministic too, so the whole body should
-    // match.
-    const sa = JSON.parse(new TextDecoder().decode(a.body)).system as any[];
-    const sb = JSON.parse(new TextDecoder().decode(b.body)).system as any[];
-    const imgsA = sa.filter((x: any) => x.type === 'image').map((x: any) => x.source.data);
-    const imgsB = sb.filter((x: any) => x.type === 'image').map((x: any) => x.source.data);
+    // match. Default placement is 'user', so the images live in the first
+    // user message.
+    const ua = (JSON.parse(new TextDecoder().decode(a.body)).messages[0].content ?? []) as any[];
+    const ub = (JSON.parse(new TextDecoder().decode(b.body)).messages[0].content ?? []) as any[];
+    const imgsA = ua.filter((x: any) => x.type === 'image').map((x: any) => x.source.data);
+    const imgsB = ub.filter((x: any) => x.type === 'image').map((x: any) => x.source.data);
     expect(imgsA.length).toBeGreaterThan(0);
     expect(imgsA).toEqual(imgsB);
     expect(a.info.systemSha8).toBe(b.info.systemSha8);
@@ -336,5 +350,27 @@ describe('transform', () => {
     expect(info.reason).toMatch(/below_min_chars/);
     const out = JSON.parse(new TextDecoder().decode(outBytes));
     expect(out.system).toBe(sys);
+  });
+
+  it("uses ttl='1h' on the image cache_control (Anthropic ordering rule)", async () => {
+    // Without ttl='1h' on our cache_control, Claude Code's own ttl='1h'
+    // breakpoint on later user-message content triggers 400: "ttl='1h' must
+    // not come after ttl='5m'" because our default 5m would land first.
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: 'claude',
+        messages: [{ role: 'user', content: 'hi' }],
+        system: 'claude.md\n'.repeat(500),
+      }),
+    );
+    const { body: outBytes } = await transformRequest(body);
+    const out = JSON.parse(new TextDecoder().decode(outBytes));
+    const blocks = [
+      ...((Array.isArray(out.system) ? out.system : []) as any[]),
+      ...((out.messages?.[0]?.content ?? []) as any[]),
+    ];
+    const cached = blocks.filter((b: any) => b.cache_control);
+    expect(cached.length).toBe(1);
+    expect(cached[0].cache_control.ttl).toBe('1h');
   });
 });

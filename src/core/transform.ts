@@ -36,7 +36,10 @@ const DEFAULTS: Required<TransformOptions> = {
   compressTools: true,
   compressSchemas: true,
   minCompressChars: 2000,
-  placement: 'system',
+  // Anthropic's `system` field accepts text blocks only — image blocks there
+  // come back as `400 system.N.type: Input should be 'text'`. Images must go
+  // into a user message instead.
+  placement: 'user',
   cols: 100,
 };
 
@@ -296,7 +299,12 @@ function makeImageBlock(pngB64: string, ephemeral = false): ImageBlock {
     type: 'image',
     source: { type: 'base64', media_type: 'image/png', data: pngB64 },
   };
-  if (ephemeral) blk.cache_control = { type: 'ephemeral' };
+  // ttl='1h' is mandatory, not cosmetic. Claude Code marks its own
+  // user-message content with cache_control ttl='1h'; Anthropic enforces
+  // "ttl='1h' must not come after ttl='5m'" in processing order
+  // (tools → system → messages). If we leave ttl unset it defaults to '5m'
+  // and our block lands BEFORE Claude Code's 1h block → 400 at runtime.
+  if (ephemeral) blk.cache_control = { type: 'ephemeral', ttl: '1h' };
   return blk;
 }
 
