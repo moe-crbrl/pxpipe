@@ -1,0 +1,7 @@
+.{
+    .name = .claude_image_proxy_renderer,
+    .version = "0.1.0",
+    .fingerprint = 0xcbf35837f9c7dd6d,
+    .paths = .{""},
+    .dependencies = .{},
+}

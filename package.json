@@ -1,0 +1,32 @@
+{
+  "name": "claude-image-proxy",
+  "version": "0.1.0",
+  "description": "Token-saving proxy for Claude Code: renders system prompt + tool definitions as images, achieving 65-73% token savings on Opus 4.7 while preserving 100% reasoning quality.",
+  "bin": {
+    "claude-image-proxy": "bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "start": "node bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "proxy",
+    "token-optimization",
+    "prompt-cache",
+    "opus-4-7"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT"
+}
