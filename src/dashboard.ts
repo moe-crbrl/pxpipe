@@ -1108,6 +1108,25 @@ const DASHBOARD_HTML = `<!doctype html>
   .card .value { font-size: 24px; font-weight: 600; color: #e6edf3; font-variant-numeric: tabular-nums; }
   .card .small { font-size: 11px; color: #6e7681; margin-top: 4px; }
   .pos { color: #3fb950 !important; }
+  /* Collapsible "show calculation" block — exposes the exact math the
+     headline number came from. Native <details>, no JS needed. */
+  .math { margin-top: 10px; font-size: 11px; }
+  .math summary { color: #58a6ff; cursor: pointer; user-select: none;
+                  list-style: none; outline: none; }
+  .math summary::-webkit-details-marker { display: none; }
+  .math summary::before { content: "▸ "; color: #6e7681; font-size: 9px; }
+  .math[open] summary::before { content: "▾ "; }
+  .math summary:hover { color: #79c0ff; }
+  .math .formula { background: #0d1117; border: 1px solid #21262d;
+                   border-radius: 6px; padding: 8px 10px; margin-top: 6px;
+                   font: 11px/1.5 "SF Mono",Menlo,monospace; color: #c9d1d9;
+                   white-space: pre-wrap; word-break: break-word; }
+  .math .formula .k { color: #8b949e; }       /* label */
+  .math .formula .v { color: #e6edf3; }       /* value */
+  .math .formula .op { color: #f0883e; }      /* operator / "=" */
+  .math .formula .src { color: #6e7681; font-size: 10px; display: block;
+                        margin-top: 6px; border-top: 1px solid #21262d;
+                        padding-top: 6px; }
   .panel { background: #161b22; border: 1px solid #30363d; border-radius: 10px;
            padding: 14px 16px; margin-bottom: 14px; }
   .panel h2 { font-size: 13px; font-weight: 600; color: #8b949e; margin: 0 0 10px;
@@ -1148,15 +1167,24 @@ const DASHBOARD_HTML = `<!doctype html>
   <div class="card"><div class="label">tokens saved</div>
     <div class="value pos" id="m_saved">0</div>
     <div class="small" id="m_saved_sub">effective tokens (full bill)</div>
+    <details class="math"><summary>show calculation</summary>
+      <div class="formula" id="m_saved_math"></div>
+    </details>
   </div>
   <div class="card"><div class="label">$ saved (estimated)</div>
     <div class="value pos" id="m_usd">$0.00</div>
     <div class="small" id="m_usd_sub">at $5/M input tokens (Opus 4.7)</div>
+    <details class="math"><summary>show calculation</summary>
+      <div class="formula" id="m_usd_math"></div>
+    </details>
   </div>
   <div class="card"><div class="label">reduction</div>
     <div class="value pos" id="m_pct">0%</div>
     <div class="small" id="m_pct_sub">share of total bill saved</div>
     <div class="small" id="m_pct_regime" style="margin-top:4px;color:#6e7681"></div>
+    <details class="math"><summary>show calculation</summary>
+      <div class="formula" id="m_pct_math"></div>
+    </details>
   </div>
 </div>
 
@@ -1289,6 +1317,12 @@ async function tick() {
         ? \`point \${pctPoint.toFixed(1)}% · estimated · share of total bill saved\`
         : 'estimated · share of total bill saved';
     }
+
+    // Populate "show calculation" blocks under each savings card. Three
+    // sections, each lays out the formula with the live numbers wired in.
+    // The intent is full transparency: any number on the headline cards
+    // can be derived from what's shown here.
+    renderSavingsMath(s);
     // Surface which cost-model regime the headline number came from. Three
     // states (mirror the THREE-MODE LADDER in dashboard.ts fitCosts):
     //   joint        — α and β both measured (≥10 samples = high confidence)
@@ -1380,6 +1414,111 @@ function shortPath(p) {
   if (!p) return '-';
   const parts = String(p).split('/');
   return parts[parts.length - 1] || p;
+}
+
+// ---- savings math panels -------------------------------------------------
+//
+// Renders the "show calculation" blocks beneath each savings card. Every
+// number on the headline cards can be derived from one of these panels.
+// No estimation hidden behind a black box — operator can copy the values
+// into a calculator and reproduce the headline byte-identically.
+function renderSavingsMath(s) {
+  const pa = s.pricing_assumptions || {};
+  const haveMeasured = typeof s.saved_pct_measured === 'number' && (s.measured_events || 0) > 0;
+
+  // ---- tokens-saved card --------------------------------------------------
+  // effective_cost = input + cache_create×1.25 + cache_read×0.10 + output×5
+  //                  ↑ summed per request, weighted by Anthropic's rate table
+  // saved_tokens   = baseline_total − actual_total
+  const savedTokensRows = [
+    fmtRow('actual_paid', s.effective_cost_actual, '(input + cc·1.25 + cr·0.10 + out·5)'),
+    fmtRow('baseline_est', s.effective_cost_baseline, '(actual + α·compressed_chars × rate)'),
+    fmtRow('saved', s.saved_effective_tokens, '<span class="op">=</span> baseline − actual'),
+  ];
+  if (typeof s.saved_pct_low === 'number' && typeof s.saved_pct_high === 'number') {
+    savedTokensRows.push(fmtRow(
+      'range', \`\${s.saved_pct_low}% – \${s.saved_pct_high}%\`,
+      '(p10/p90 of per-sample α)'
+    ));
+  }
+  document.getElementById('m_saved_math').innerHTML =
+    '<div><span class="k">formula:</span> <span class="v">saved = baseline − actual</span></div>'
+    + '<div><span class="k">weights:</span> <span class="v">input ×1.0, cc ×1.25, cr ×0.10, output ×5.0</span></div>'
+    + '<div style="height:6px"></div>'
+    + savedTokensRows.join('')
+    + '<span class="src">numbers in effective tokens, multiply by per-Mtok rate for $</span>';
+
+  // ---- $ saved card -------------------------------------------------------
+  const inRate = pa.input_per_mtok;
+  const outMult = pa.output_multiplier;
+  const usdRows = [
+    fmtRow('saved_tokens', s.saved_effective_tokens, '(effective, full bill)'),
+    fmtRow('input_rate', \`$\${inRate}/Mtok\`, '(Opus 4.7 base input)'),
+    fmtRow('saved_usd',
+           \`$\${(s.saved_usd_estimated || 0).toFixed(4)}\`,
+           '<span class="op">=</span> saved_tokens × input_rate / 1e6'),
+  ];
+  document.getElementById('m_usd_math').innerHTML =
+    '<div><span class="k">formula:</span> <span class="v">$ = saved_tokens × $'
+      + inRate + '/Mtok</span></div>'
+    + '<div><span class="k">rate ratios:</span> <span class="v">'
+      + 'output ×' + outMult + ', 5m cache write ×' + pa.cache_write_5m_multiplier
+      + ', 1h cache write ×' + pa.cache_write_1h_multiplier
+      + ', cache read ×' + pa.cache_read_multiplier
+      + '</span></div>'
+    + '<div style="height:6px"></div>'
+    + usdRows.join('')
+    + '<span class="src">source: ' + escapeHtml(pa.source || 'docs.anthropic.com pricing') + '</span>';
+
+  // ---- reduction (%) card -------------------------------------------------
+  const pctRows = [];
+  if (haveMeasured) {
+    pctRows.push(fmtRow('baseline_tokens', s.effective_cost_baseline_measured,
+                        '(count_tokens on pre-transform body, summed)'));
+    pctRows.push(fmtRow('actual_tokens', s.effective_cost_actual_measured,
+                        '(count_tokens on post-transform body, summed)'));
+    pctRows.push(fmtRow('saved_tokens', s.saved_effective_tokens_measured,
+                        '<span class="op">=</span> baseline − actual'));
+    pctRows.push(fmtRow('saved_pct', s.saved_pct_measured + '%',
+                        '<span class="op">=</span> saved / baseline × 100'));
+    pctRows.push(fmtRow('measured_events', s.measured_events,
+                        '(events where count_tokens succeeded on both bodies)'));
+  } else {
+    pctRows.push(fmtRow('baseline_est', s.effective_cost_baseline,
+                        '(α × compressed_chars × cache-mix-rate, summed)'));
+    pctRows.push(fmtRow('actual_paid', s.effective_cost_actual, '(weighted upstream usage, summed)'));
+    pctRows.push(fmtRow('saved', s.saved_effective_tokens,
+                        '<span class="op">=</span> baseline − actual'));
+    pctRows.push(fmtRow('saved_pct', s.saved_pct + '%',
+                        '<span class="op">=</span> saved / baseline × 100'));
+    if (typeof s.saved_pct_low === 'number' && typeof s.saved_pct_high === 'number') {
+      pctRows.push(fmtRow('range', \`\${s.saved_pct_low}% – \${s.saved_pct_high}%\`,
+                          '(p10/p90 of per-sample α across fit ring)'));
+    }
+  }
+  // Image-cost formula reference — applies on the actual side because
+  // each image we emit costs ~width×height/750 tokens upstream.
+  const imgFormula =
+    '<div><span class="k">image cost:</span> <span class="v">tokens ≈ width × height / 750</span>'
+      + ' <span class="k">(per docs-vision)</span></div>';
+  document.getElementById('m_pct_math').innerHTML =
+    '<div><span class="k">formula:</span> <span class="v">'
+      + 'saved_pct = (baseline − actual) / baseline × 100</span></div>'
+    + imgFormula
+    + '<div style="height:6px"></div>'
+    + pctRows.join('')
+    + '<span class="src">'
+      + (haveMeasured
+          ? 'measured · count_tokens ground truth, no estimation'
+          : 'estimated · α-regression from cold-miss events')
+      + '</span>';
+}
+
+function fmtRow(key, val, note) {
+  const v = (typeof val === 'number') ? numFmt(val) : String(val ?? '—');
+  return '<div><span class="k">' + key + ':</span> '
+    + '<span class="v">' + escapeHtml(v) + '</span> '
+    + '<span class="k">' + (note || '') + '</span></div>';
 }
 
 // ---- session table: diff-render row by row -------------------------------
