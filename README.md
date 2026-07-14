@@ -84,16 +84,10 @@ are imaged.
 - **Workload-dependent.** Wins on token-dense content (~1 char/token),
   loses money on sparse prose (~3.5 chars/token); a profitability gate
   (calibrated on N=391 production rows) images only where the math wins.
-- **Client-dependent, not product-name-dependent.** Savings track uncached
-  bulk the client still re-sends as text. Claude Code re-sends system + tools
-  + history on `/anthropic/messages` and typically lands ~60–70%. Codex on
-  `/v1/responses` is supported; when the prompt is already ~98%
-  `cached_tokens`, only the static slab (and rare history collapses) remain
-  to image, so Saved can honestly sit near 1%. The same Responses path saves
-  tens of percent when history collapse fires, and an OpenAI client that
-  re-sends the full transcript as plain text each turn is in the same high-
-  savings class as Claude Code. Details and measured splits:
-  [docs/CACHING_AND_SAVINGS.md](docs/CACHING_AND_SAVINGS.md#openai-responses-path-codex-and-friends).
+- **Client-dependent.** Savings track uncached bulk the client still
+  re-sends as text. Claude Code re-sends system + tools + history on
+  `/anthropic/messages` and typically lands ~60–70%. Details and measured
+  splits: [docs/CACHING_AND_SAVINGS.md](docs/CACHING_AND_SAVINGS.md).
 - **Model scope:** default `PXPIPE_MODELS=claude-fable-5`. Sol, Opus
   4.7/4.8, GPT 5.5, and **Grok** are opt-in only (dashboard chips or
   `PXPIPE_MODELS`) — not good enough as silent defaults for imaged context.
